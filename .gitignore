@@ -1,0 +1,24 @@
+# Dependencies (reinstalled with npm install, never upload)
+node_modules/
+
+# Secrets (real passwords/keys live here)
+.env
+
+# Personal learning files
+notes/
+LEARNINGS.md
+CLAUDE.md
+.claude/
+
+# Images and screenshots
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# Logs
+*.log
+
+# OS junk files
+.DS_Store
+Thumbs.db

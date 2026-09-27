@@ -1,0 +1,92 @@
+# docker-compose.yml — local infrastructure for EmoStream (Day 1: no app code yet)
+# Start everything:  docker compose up -d      Stop:  docker compose down
+
+services:                                  # every entry below becomes one container
+
+  # ───────────────────────────── KAFKA ─────────────────────────────
+  kafka:
+    image: apache/kafka:4.1.0              # official Apache Kafka image from Docker Hub, pinned so it never changes under us
+    container_name: kafka                  # fixed name, so `docker exec -it kafka ...` works
+    ports:
+      - "9092:9092"                        # HOST:CONTAINER — lets apps on your PC reach Kafka at localhost:9092
+    environment:                           # settings passed into the container; the image turns KAFKA_* vars into Kafka config
+      # --- identity / KRaft mode (no Zookeeper) ---
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"  # unique id for this cluster; Kafka formats its storage with it on first start
+      KAFKA_NODE_ID: 1                     # this broker's id; with one node it's simply 1
+      KAFKA_PROCESS_ROLES: broker,controller  # one process does both jobs: broker (stores messages) + controller (cluster bookkeeping Zookeeper used to do)
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093  # who votes on cluster decisions: node 1, reachable at kafka:9093. Only us.
+
+      # --- listeners: the "doors" into Kafka ---
+      # LISTENERS = which ports Kafka opens inside the container (name://host:port; empty host = all interfaces)
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      # ADVERTISED = the address Kafka tells clients "connect to me here next time".
+      #   INTERNAL → kafka:29092    : other containers (Kafka UI) know this container by the name "kafka"
+      #   EXTERNAL → localhost:9092 : your PC reaches it via the port mapping above
+      # (CONTROLLER is not advertised: only Kafka itself uses it)
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT  # all doors use plain, unencrypted TCP (fine locally)
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL   # door brokers use to talk to each other (matters only with >1 broker, but required)
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER  # tells Kafka which door is the controller one
+
+      # --- single-node safety settings ---
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1          # internal topic storing consumer offsets; default is 3 copies but we have 1 broker
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1  # same idea for the transactions log
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1             # min in-sync copies required; must be ≤ copies we have (1)
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0          # don't wait 3s before assigning partitions to consumers — faster local testing
+
+      # --- topic behaviour ---
+      KAFKA_NUM_PARTITIONS: 3                   # default partition count if a topic is created without specifying
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"  # a typo'd topic name fails loudly instead of silently creating a new topic
+    healthcheck:                           # Docker runs this command repeatedly; success = container shows "healthy"
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]  # asks the broker "are you answering?"
+      interval: 10s                        # check every 10 seconds
+      timeout: 10s                         # a single check may take up to 10s (Java tools start slowly)
+      retries: 10                          # 10 failures in a row → "unhealthy"
+      start_period: 20s                    # grace period while Kafka boots; failures here don't count
+    # No volume for Kafka on Day 1: topics survive stop/start but are wiped by `docker compose down`.
+
+  # ──────────────────────────── KAFKA UI ───────────────────────────
+  kafka-ui:
+    image: kafbat/kafka-ui:latest          # web UI to browse topics/messages (kafbat = maintained fork of provectus kafka-ui)
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"                        # open http://localhost:8080 in your browser
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local                    # display name for cluster #0 in the UI
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092  # UI is a container → it must use the INTERNAL door, not localhost
+    depends_on:                            # start order: don't start the UI until...
+      kafka:
+        condition: service_healthy         # ...Kafka's healthcheck passes
+
+  # ───────────────────────────── REDIS ─────────────────────────────
+  redis:
+    image: redis:7-alpine                  # Redis 7 on tiny Alpine Linux (same image you ran by hand)
+    container_name: redis
+    ports:
+      - "6379:6379"                        # your PC → localhost:6379
+    command: ["redis-server", "--appendonly", "yes"]  # AOF: log every write to disk so data survives restarts (Redis is in-memory by default)
+    volumes:
+      - redis-data:/data                   # named volume → Redis's /data folder; survives container removal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]   # healthy when Redis answers PONG
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────── MONGODB ────────────────────────────
+  mongo:
+    image: mongo:7                         # MongoDB 7 (stores aggregated emoji history later)
+    container_name: mongo
+    ports:
+      - "27017:27017"                      # your PC → mongodb://localhost:27017 (no username/password: local dev only)
+    volumes:
+      - mongo-data:/data/db                # named volume → where Mongo keeps its database files
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]  # healthy when Mongo answers ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:                                   # declare the named volumes used above; Docker creates and manages them
+  redis-data:
+  mongo-data:
