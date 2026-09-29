@@ -3,7 +3,7 @@ const express = require('express');
 const pino = require('pino');
 const { connectProducer, sendEmoji, disconnectProducer } = require('./kafka');
 const redis = require('./redis');
-const { fixedWindowLimiter } = require('./rateLimit');
+const { fixedWindowLimiter, slidingWindowLimiter } = require('./rateLimit');
 
 const logger = pino();
 const PORT = process.env.PORT || 3000;
@@ -16,7 +16,11 @@ app.use(express.json());
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-const limiter = fixedWindowLimiter({ limit: 5, windowSec: 1, logger });
+const limiterOptions = { limit: 5, windowSec: 1, logger };
+const limiter =
+  process.env.LIMITER === 'fixed'
+    ? fixedWindowLimiter(limiterOptions)
+    : slidingWindowLimiter(limiterOptions);
 
 app.post('/emoji', limiter, async (req, res) => {
   const { userId, emoji } = req.body || {};

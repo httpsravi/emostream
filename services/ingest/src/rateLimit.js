@@ -22,4 +22,36 @@ function fixedWindowLimiter({ limit, windowSec, logger }) {
   };
 }
 
-module.exports = { fixedWindowLimiter };
+function slidingWindowLimiter({ limit, windowSec, logger }) {
+  const windowMs = windowSec * 1000;
+
+  return async (req, res, next) => {
+    const userId = req.body && req.body.userId;
+    if (!userId) return next();
+
+    const now = Date.now();
+    const key = `rl:sliding:${userId}`;
+    const member = `${now}-${Math.random()}`;
+
+    try {
+      const results = await redis
+        .multi()
+        .zremrangebyscore(key, 0, now - windowMs)
+        .zadd(key, now, member)
+        .zcard(key)
+        .pexpire(key, windowMs)
+        .exec();
+      const count = results[2][1];
+
+      if (count > limit) {
+        return res.status(429).json({ error: 'too many requests' });
+      }
+      next();
+    } catch (err) {
+      logger.error({ err }, 'rate limiter failed, allowing request');
+      next();
+    }
+  };
+}
+
+module.exports = { fixedWindowLimiter, slidingWindowLimiter };
