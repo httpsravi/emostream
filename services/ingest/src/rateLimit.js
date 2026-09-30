@@ -1,3 +1,4 @@
+const { randomUUID } = require('crypto');
 const redis = require('./redis');
 
 function fixedWindowLimiter({ limit, windowSec, logger }) {
@@ -22,6 +23,39 @@ function fixedWindowLimiter({ limit, windowSec, logger }) {
   };
 }
 
+redis.defineCommand('slidingWindowAcquire', {
+  numberOfKeys: 1,
+  lua: `
+    local key = KEYS[1]
+    local limit = tonumber(ARGV[1])
+    local windowMs = tonumber(ARGV[2])
+    local member = ARGV[3]
+    local now = tonumber(ARGV[4])
+
+    if not now then
+      local t = redis.call('TIME')
+      now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+    end
+
+    redis.call('ZREMRANGEBYSCORE', key, '-inf', now - windowMs)
+
+    if redis.call('ZCARD', key) >= limit then
+      return 0
+    end
+
+    redis.call('ZADD', key, now, member)
+    redis.call('PEXPIRE', key, windowMs)
+    return 1
+  `,
+});
+
+async function acquireSlidingWindow({ userId, limit, windowMs, now }) {
+  const args = [`rl:sliding:${userId}`, limit, windowMs, randomUUID()];
+  if (now !== undefined) args.push(now);
+  const allowed = await redis.slidingWindowAcquire(...args);
+  return allowed === 1;
+}
+
 function slidingWindowLimiter({ limit, windowSec, logger }) {
   const windowMs = windowSec * 1000;
 
@@ -29,21 +63,9 @@ function slidingWindowLimiter({ limit, windowSec, logger }) {
     const userId = req.body && req.body.userId;
     if (!userId) return next();
 
-    const now = Date.now();
-    const key = `rl:sliding:${userId}`;
-    const member = `${now}-${Math.random()}`;
-
     try {
-      const results = await redis
-        .multi()
-        .zremrangebyscore(key, 0, now - windowMs)
-        .zadd(key, now, member)
-        .zcard(key)
-        .pexpire(key, windowMs)
-        .exec();
-      const count = results[2][1];
-
-      if (count > limit) {
+      const allowed = await acquireSlidingWindow({ userId, limit, windowMs });
+      if (!allowed) {
         return res.status(429).json({ error: 'too many requests' });
       }
       next();
@@ -54,4 +76,4 @@ function slidingWindowLimiter({ limit, windowSec, logger }) {
   };
 }
 
-module.exports = { fixedWindowLimiter, slidingWindowLimiter };
+module.exports = { fixedWindowLimiter, slidingWindowLimiter, acquireSlidingWindow };
