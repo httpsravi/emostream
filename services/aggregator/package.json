@@ -10,5 +10,9 @@
   },
   "devDependencies": {
     "jest": "^29.7.0"
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4",
+    "pino": "^9.14.0"
   }
 }
