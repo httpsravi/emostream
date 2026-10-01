@@ -12,7 +12,9 @@
     "jest": "^29.7.0"
   },
   "dependencies": {
+    "ioredis": "^5.11.1",
     "kafkajs": "^2.2.4",
+    "mongoose": "^8.24.4",
     "pino": "^9.14.0"
   }
 }

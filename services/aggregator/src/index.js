@@ -1,6 +1,8 @@
 const pino = require('pino');
 const { consumer, producer, publishWindows } = require('./kafka');
 const { createAggregator } = require('./window');
+const { connectHistory, saveWindows, disconnectHistory } = require('./history');
+const { redis, addToLeaderboard } = require('./leaderboard');
 
 const logger = pino();
 const FLUSH_EVERY_MS = 500;
@@ -17,16 +19,29 @@ function parseEvent(message) {
   }
 }
 
+const SINKS = ['kafka', 'mongo', 'leaderboard'];
+
 async function flushAndPublish(now) {
   const closed = agg.flush(now);
-  await publishWindows(closed);
+  if (closed.length === 0) return;
+
+  const results = await Promise.allSettled([
+    publishWindows(closed),
+    saveWindows(closed),
+    addToLeaderboard(closed),
+  ]);
+
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') logger.error({ err: r.reason, sink: SINKS[i] }, 'save failed');
+  });
   for (const w of closed) {
     logger.info({ windowStart: w.windowStart, counts: w.counts }, 'window published');
   }
 }
 
 async function start() {
-  await producer.connect();
+  await Promise.all([producer.connect(), connectHistory(), redis.connect()]);
+  logger.info('kafka producer, mongo and redis connected');
   await consumer.connect();
   await consumer.subscribe({ topic: 'emoji-events', fromBeginning: false });
 
@@ -54,6 +69,8 @@ async function start() {
     await consumer.disconnect();
     await flushAndPublish(Infinity);
     await producer.disconnect();
+    await disconnectHistory();
+    await redis.quit();
     logger.info({ stats: agg.stats() }, 'shutdown complete');
     process.exit(0);
   };
